@@ -1,4 +1,4 @@
-package queue2
+package queue
 
 import (
 	"container/heap"
@@ -25,7 +25,7 @@ func (pq *PriorityQueue) Len() int {
 	return n
 }
 
-// Push入队一个元素
+// Push入队
 func (pq *PriorityQueue) Push(elem *Element) {
 	if elem != nil {
 		pq.Lock()
@@ -37,7 +37,7 @@ func (pq *PriorityQueue) Push(elem *Element) {
 	}
 }
 
-// Pop出队一个元素
+// Pop出队
 func (pq *PriorityQueue) Pop() *Element {
 	for {
 		var elem *Element
@@ -48,19 +48,21 @@ func (pq *PriorityQueue) Pop() *Element {
 			atomic.StoreInt32(&pq.wait, 1)
 		}
 		pq.RUnlock()
-		if elem == nil {
+		switch {
+		case atomic.LoadInt32(&pq.wait) == 1:
 			select {
 			case <-pq.wake:
 				continue
 			case <-pq.ctx.Done():
-				return elem
+				return nil
 			}
+		default:
+			return elem
 		}
-		return elem
 	}
 }
 
-// Fix更新该元素并根据优先级重新固定位置
+// Fix更新元素并根据优先级重新固定位置
 func (pq *PriorityQueue) Fix(elem *Element) {
 	if elem != nil && elem.index > -1 {
 		pq.Lock()
@@ -69,24 +71,27 @@ func (pq *PriorityQueue) Fix(elem *Element) {
 	}
 }
 
-// Remove删除队列中的该元素
+// Remove删除队列中的元素
 func (pq *PriorityQueue) Remove(elem *Element) {
-	pq.Lock()
 	if elem != nil && elem.index > -1 {
+		pq.Lock()
 		heap.Remove(pq.h, elem.index)
+		pq.Unlock()
 	}
-	pq.Unlock()
 }
 
-// Peek查看指定位置的一个元素,但不出队
-func (pq *PriorityQueue) Peek(idx int) *Element {
+// Peek查看但不出队
+func (dq *DelayQueue) Peek(idx int) *Element {
+	if idx < 0 {
+		return nil
+	}
 	var elem *Element
-	pq.RLock()
-	if n := pq.h.Len(); n > idx && idx > -1 {
-		hi := *pq.h.(*HeapElements)
+	dq.RLock()
+	if n := dq.h.Len(); n > idx {
+		hi := *dq.h.(*HeapElements)
 		elem = hi[idx]
 	}
-	pq.RUnlock()
+	dq.RUnlock()
 	return elem
 }
 

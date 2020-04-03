@@ -1,31 +1,9 @@
-package queue2
+package queue
 
-// 队列接口,该包的所有队列都应实现该接口
-type Queue interface {
-	// Len队列长度
-	Len() int
-	// Pop出队一个元素
-	Pop() *Element
-	// Push入队一个元素
-	Push(*Element)
-	// Peek查看指定位置的一个元素,但不出队
-	Peek(int) *Element
-	// Fix更新该元素并根据优先级重新固定位置
-	Fix(*Element)
-	// Remove删除队列中的该元素
-	Remove(*Element)
-	// Off关闭队列
-	Off()
-}
-
-// 队列元素
 type Element struct {
-	// 元素值
-	Value interface{}
-	// 优先级,越大越先出队
-	Priority int
-	// 元素位置
-	index int
+	Value    interface{} // 值
+	Priority int         // 优先级,越大越先出队
+	index    int         // 位置
 }
 
 // 实现标准库heap接口

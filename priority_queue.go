@@ -7,13 +7,19 @@ import (
 	"sync/atomic"
 )
 
+const (
+	normal   int32 = 0
+	waiting  int32 = 1
+	blocking int32 = 2
+)
+
 // 优先级队列
 type PriorityQueue struct {
 	sync.RWMutex
 	h      heap.Interface
 	ctx    context.Context
 	cancel context.CancelFunc
-	wait   int32
+	state  int32
 	wake   chan struct{}
 }
 
@@ -31,7 +37,8 @@ func (pq *PriorityQueue) Push(elem *Element) {
 		pq.Lock()
 		heap.Push(pq.h, elem)
 		pq.Unlock()
-		if atomic.CompareAndSwapInt32(&pq.wait, 1, 0) {
+		// 如果Pop正在阻塞,则通知其醒来
+		if atomic.CompareAndSwapInt32(&pq.state, blocking, normal) {
 			pq.wake <- struct{}{}
 		}
 	}
@@ -45,15 +52,19 @@ func (pq *PriorityQueue) Pop() *Element {
 		if n := pq.h.Len(); n > 0 {
 			elem = heap.Pop(pq.h).(*Element)
 		} else {
-			atomic.StoreInt32(&pq.wait, 1)
+			// 队列中没有元素,更新状态为等待Push
+			atomic.StoreInt32(&pq.state, waiting)
 		}
 		pq.RUnlock()
 		switch {
-		case atomic.LoadInt32(&pq.wait) == 1:
+		// 如果状态为等待Push,则更新状态为阻塞,并监听苏醒信号
+		case atomic.CompareAndSwapInt32(&pq.state, waiting, blocking):
 			select {
 			case <-pq.wake:
 				continue
 			case <-pq.ctx.Done():
+				// 结束Pop,改变状态为正常
+				atomic.StoreInt32(&pq.state, normal)
 				return nil
 			}
 		default:
@@ -81,17 +92,17 @@ func (pq *PriorityQueue) Remove(elem *Element) {
 }
 
 // Peek查看但不出队
-func (dq *DelayQueue) Peek(idx int) *Element {
+func (pq *PriorityQueue) Peek(idx int) *Element {
 	if idx < 0 {
 		return nil
 	}
 	var elem *Element
-	dq.RLock()
-	if n := dq.h.Len(); n > idx {
-		hi := *dq.h.(*HeapElements)
+	pq.RLock()
+	if n := pq.h.Len(); n > idx {
+		hi := *pq.h.(*HeapElements)
 		elem = hi[idx]
 	}
-	dq.RUnlock()
+	pq.RUnlock()
 	return elem
 }
 

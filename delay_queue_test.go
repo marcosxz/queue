@@ -8,18 +8,21 @@ import (
 
 func TestNewDelayQueue(t *testing.T) {
 	dq := NewDelayQueue(10)
-	dq.Push(1, time.Second*1)
-	dq.Push(2, time.Second*2)
-	dq.Push(3, time.Second*3)
-	dq.Push(4, time.Second*4)
-	//dq.Push(8, time.Second*8)
+	wg := &sync.WaitGroup{}
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		ic := *&i
+		go func() {
+			dq.Push(ic, time.Second*time.Duration(ic))
+			wg.Done()
+		}()
+	}
 
 	go func() {
 		time.Sleep(time.Second * 10)
 		dq.Off()
 	}()
 
-	wg := &sync.WaitGroup{}
 	wg.Add(1)
 	go func() {
 		defer wg.Done()

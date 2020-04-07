@@ -1,6 +1,8 @@
 package queue
 
 import (
+	"context"
+	"log"
 	"sync"
 	"testing"
 	"time"
@@ -9,32 +11,56 @@ import (
 func TestNewDelayQueue(t *testing.T) {
 	dq := NewDelayQueue(10)
 	wg := &sync.WaitGroup{}
+	ctx, cancel := context.WithCancel(context.Background())
+
 	for i := 0; i < 100; i++ {
 		wg.Add(1)
 		ic := *&i
 		go func() {
-			dq.Push(ic, time.Second*time.Duration(ic))
+			dq.Push(&Delay{Value: ic, Delay: time.Second * time.Duration(ic)})
+			wg.Done()
+		}()
+	}
+
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		ic := *&i
+		go func() {
+			dq.Push(&Delay{Value: ic, Delay: time.Second * time.Duration(ic)})
 			wg.Done()
 		}()
 	}
 
 	go func() {
 		time.Sleep(time.Second * 10)
-		dq.Off()
+		cancel()
 	}()
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		for {
-			val := dq.Pop()
-			t.Log("pop:", val)
+			val := dq.Pop(ctx)
+			log.Println("pop:", val)
 			if val == nil {
-				t.Log("pop:stop")
+				log.Println("pop:stop")
 				return
 			}
 		}
 	}()
+
+	// wg.Add(1)
+	// go func() {
+	// 	defer wg.Done()
+	// 	for {
+	// 		val := dq.Pop(ctx)
+	// 		log.Println("pop2:", val)
+	// 		if val == nil {
+	// 			log.Println("pop2:stop")
+	// 			return
+	// 		}
+	// 	}
+	// }()
 
 	wg.Wait()
 }

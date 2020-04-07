@@ -8,93 +8,96 @@ import (
 	"time"
 )
 
+const (
+	expired  = 0
+	expiring = 1
+	sleeping = 2
+)
+
 // 延迟队列
 type DelayQueue struct {
 	sync.RWMutex
-	h          heap.Interface
-	ctx        context.Context
-	cancel     context.CancelFunc
-	delay      time.Duration
-	delayState int32
-	delayWake  chan struct{}
-	pushState  int32
-	pushWake   chan struct{}
-}
-
-// Len队列长度
-func (dq *DelayQueue) Len() int {
-	dq.RLock()
-	n := dq.h.Len()
-	dq.RUnlock()
-	return n
+	h      heap.Interface
+	delay  time.Duration
+	sleep  int32
+	delayC chan struct{}
+	state  int32
+	wakeC  chan struct{}
 }
 
 // Push入队一个
-func (dq *DelayQueue) Push(value interface{}, delay time.Duration) {
-	elem := &Element{Value: value, Priority: -int(time.Now().Add(delay).UnixNano())}
+func (dq *DelayQueue) Push(delay *Delay) {
+	delay.deadline = time.Now().Add(delay.Delay)
 	change := false
 	dq.Lock()
-	heap.Push(dq.h, elem)
-	if dq.delay == 0 || delay < dq.delay {
-		dq.delay = delay
+	heap.Push(dq.h, delay)
+	if dq.delay == 0 || dq.delay > delay.Delay {
+		dq.delay = delay.Delay
 		change = true
 	}
 	dq.Unlock()
-	if change && atomic.CompareAndSwapInt32(&dq.delayState, blocking, normal) {
-		dq.delayWake <- struct{}{}
+	if change && atomic.CompareAndSwapInt32(&dq.sleep, sleeping, expired) {
+		dq.delayC <- struct{}{}
 	}
-	if atomic.CompareAndSwapInt32(&dq.pushState, blocking, normal) {
-		dq.pushWake <- struct{}{}
+	if atomic.CompareAndSwapInt32(&dq.state, blocking, normal) {
+		dq.wakeC <- struct{}{}
 	}
 }
 
 // Pop满足指定条件的元素才出队
-func (dq *DelayQueue) Pop() interface{} {
+func (dq *DelayQueue) Pop(ctx context.Context) *Delay {
 	for {
-		var elem *Element
-		var delta int64
-		dq.RLock()
+		var delay *Delay
+		var delta time.Duration
+		dq.Lock()
 		if n := dq.h.Len(); n > 0 {
-			hi := *dq.h.(*HeapElements)
-			elem = hi[0]
-			if delta = time.Now().UnixNano() + int64(elem.Priority); delta >= 0 {
-				heap.Pop(dq.h)
+			hi := *dq.h.(*HeapDelays)
+			delay = hi[0]
+			delta = time.Now().Sub(delay.deadline)
+			if delta <= 0 {
+				atomic.StoreInt32(&dq.sleep, expiring)
 			} else {
-				atomic.CompareAndSwapInt32(&dq.pushState, normal, waiting)
+				heap.Remove(dq.h, delay.index)
 			}
 		} else {
-			atomic.CompareAndSwapInt32(&dq.pushState, normal, waiting)
+			atomic.StoreInt32(&dq.state, waiting)
 		}
-		dq.RUnlock()
+		dq.Unlock()
 		switch {
-		case atomic.CompareAndSwapInt32(&dq.pushState, waiting, blocking):
+		case atomic.CompareAndSwapInt32(&dq.state, waiting, blocking):
 			select {
-			case <-dq.pushWake:
+			case <-dq.wakeC:
 				continue
-			case <-dq.ctx.Done():
+			case <-ctx.Done():
+				atomic.StoreInt32(&dq.state, normal)
 				return nil
 			}
 		default:
 			switch {
-			case atomic.CompareAndSwapInt32(&dq.pushState, waiting, blocking):
-			rest:
+			case atomic.CompareAndSwapInt32(&dq.sleep, expiring, sleeping):
+			reset:
 				select {
 				case <-time.After(dq.delay):
-				case <-dq.delayWake:
-					goto rest
+				case <-ctx.Done():
+					atomic.StoreInt32(&dq.sleep, expired)
+					return nil
+				case <-dq.delayC:
+					goto reset
 				}
 			default:
-				return elem.Value
+				select {
+				case <-ctx.Done():
+					return nil
+				default:
+					return delay
+				}
 			}
 		}
 	}
 }
 
-func (dq *DelayQueue) Off() { dq.cancel() }
-
 func NewDelayQueue(cap int) *DelayQueue {
-	h := make(HeapElements, 0, cap)
+	h := make(HeapDelays, 0, cap)
 	heap.Init(&h)
-	ctx, cancel := context.WithCancel(context.Background())
-	return &DelayQueue{h: &h, ctx: ctx, cancel: cancel, delayWake: make(chan struct{}, 1), pushWake: make(chan struct{}, 1)}
+	return &DelayQueue{h: &h, wakeC: make(chan struct{}), delayC: make(chan struct{})}
 }

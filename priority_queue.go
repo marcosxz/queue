@@ -39,13 +39,13 @@ func (pq *PriorityQueue) Push(elem *Element) {
 func (pq *PriorityQueue) Pop(ctx context.Context) *Element {
 	for {
 		var elem *Element
-		pq.RLock()
+		pq.Lock()
 		if n := pq.h.Len(); n > 0 {
 			elem = heap.Pop(pq.h).(*Element)
 		} else {
 			atomic.StoreInt32(&pq.state, waiting)
 		}
-		pq.RUnlock()
+		pq.Unlock()
 		switch {
 		case atomic.CompareAndSwapInt32(&pq.state, waiting, blocking):
 			select {

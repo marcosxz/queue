@@ -20,12 +20,22 @@ func TestNewPriorityQueue(t *testing.T) {
 	}()
 
 	// 生产Push
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 1000; i++ {
 		ic := *&i
 		go func() {
 			elem := &Element{Value: ic, Priority: ic}
 			pq.Push(elem)
-			log.Println("push:", elem)
+			log.Println("push1:", elem)
+		}()
+	}
+
+	// 生产Push
+	for i := 0; i < 1000; i++ {
+		ic := *&i
+		go func() {
+			elem := &Element{Value: ic, Priority: ic}
+			pq.Push(elem)
+			log.Println("push2:", elem)
 		}()
 	}
 

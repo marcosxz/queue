@@ -7,12 +7,20 @@ import (
 	"sync/atomic"
 )
 
+const (
+	normal   int32 = 0
+	waiting  int32 = 1
+	blocking int32 = 2
+)
+
 // 优先级队列
 type PriorityQueue struct {
 	sync.RWMutex
-	h     heap.Interface
-	state int32
-	wakeC chan struct{}
+	h      heap.Interface
+	state  int32
+	wakeC  chan struct{}
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // Len队列长度
@@ -36,7 +44,7 @@ func (pq *PriorityQueue) Push(elem *Element) {
 }
 
 // Pop出队
-func (pq *PriorityQueue) Pop(ctx context.Context) *Element {
+func (pq *PriorityQueue) Pop() *Element {
 	for {
 		var elem *Element
 		pq.Lock()
@@ -49,15 +57,18 @@ func (pq *PriorityQueue) Pop(ctx context.Context) *Element {
 		switch {
 		case atomic.CompareAndSwapInt32(&pq.state, waiting, blocking):
 			select {
-			case <-pq.wakeC:
-				continue
-			case <-ctx.Done():
-				atomic.StoreInt32(&pq.state, normal)
+			case i := <-pq.wakeC:
+				select {
+				case pq.wakeC <- i:
+				default:
+					continue
+				}
+			case <-pq.ctx.Done():
 				return nil
 			}
 		default:
 			select {
-			case <-ctx.Done():
+			case <-pq.ctx.Done():
 				return nil
 			default:
 				return elem
@@ -99,8 +110,13 @@ func (pq *PriorityQueue) Peek(idx int) *Element {
 	return elem
 }
 
+func (pq *PriorityQueue) Stop() {
+	pq.cancel()
+}
+
 func NewPriorityQueue(cap int) *PriorityQueue {
 	h := make(HeapElements, 0, cap)
 	heap.Init(&h)
-	return &PriorityQueue{h: &h, wakeC: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	return &PriorityQueue{h: &h, ctx: ctx, cancel: cancel, wakeC: make(chan struct{})}
 }

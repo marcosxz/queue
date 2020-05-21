@@ -1,7 +1,6 @@
 package queue
 
 import (
-	"context"
 	"log"
 	"sync"
 	"testing"
@@ -9,58 +8,64 @@ import (
 )
 
 func TestNewDelayQueue(t *testing.T) {
-	dq := NewDelayQueue(10)
+	pq := NewDelayQueue(time.Second, 1000)
 	wg := &sync.WaitGroup{}
-	ctx, cancel := context.WithCancel(context.Background())
 
-	for i := 0; i < 100; i++ {
-		wg.Add(1)
-		ic := *&i
-		go func() {
-			dq.Push(&Delay{Value: ic, Delay: time.Second * time.Duration(ic)})
-			wg.Done()
-		}()
-	}
-
-	for i := 0; i < 100; i++ {
-		wg.Add(1)
-		ic := *&i
-		go func() {
-			dq.Push(&Delay{Value: ic, Delay: time.Second * time.Duration(ic)})
-			wg.Done()
-		}()
-	}
-
+	// 停止Pop
 	go func() {
-		time.Sleep(time.Second * 10)
-		cancel()
+		time.Sleep(time.Second * 60)
+		pq.Stop()
 	}()
 
+	// 生产Push
+	for i := 0; i < 1000; i++ {
+		ic := *&i
+		go func() {
+			elem := &Delay{Value: ic, Delay: time.Millisecond * time.Duration(ic)}
+			pq.Push(elem)
+			//log.Println("push1:", elem)
+		}()
+	}
+
+	// 生产Push
+	go func() {
+		for i := 0; i < 1000; i++ {
+			ic := *&i
+			go func() {
+				elem := &Delay{Value: ic, Delay: time.Millisecond * time.Duration(ic)}
+				pq.Push(elem)
+				//log.Println("push2:", elem)
+			}()
+		}
+	}()
+
+	// 消费Pop
 	wg.Add(1)
 	go func() {
-		defer wg.Done()
 		for {
-			val := dq.Pop(ctx)
-			log.Println("pop:", val)
-			if val == nil {
-				log.Println("pop:stop")
+			elem := pq.Pop()
+			log.Println("pop1:", elem, elem.deadline.Sub(time.Now()))
+			if elem == nil { // 得到的元素为空时说明队列已停止
+				log.Println("pop1:stop", pq.Len())
+				wg.Done()
 				return
 			}
 		}
 	}()
 
-	// wg.Add(1)
-	// go func() {
-	// 	defer wg.Done()
-	// 	for {
-	// 		val := dq.Pop(ctx)
-	// 		log.Println("pop2:", val)
-	// 		if val == nil {
-	// 			log.Println("pop2:stop")
-	// 			return
-	// 		}
-	// 	}
-	// }()
+	// 消费Pop
+	wg.Add(1)
+	go func() {
+		for {
+			elem := pq.Pop()
+			log.Println("pop2:", elem, elem.deadline.Sub(time.Now()))
+			if elem == nil {
+				log.Println("pop2:stop", pq.Len())
+				wg.Done()
+				return
+			}
+		}
+	}()
 
 	wg.Wait()
 }

@@ -4,12 +4,6 @@ import (
 	"time"
 )
 
-const (
-	normal   int32 = 0
-	waiting  int32 = 1
-	blocking int32 = 2
-)
-
 type Element struct {
 	Value    interface{} // 值
 	Priority int         // 优先级,越大越先出队

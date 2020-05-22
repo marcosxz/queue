@@ -48,16 +48,6 @@ func (pq *DelayQueue) Pop() *Delay {
 		if n := pq.h.Len(); n > 0 {
 			hi := *pq.h.(*HeapDelays)
 			elem = hi[0]
-			if d := elem.deadline.Sub(time.Now()); d > 0 {
-				after := pq.minDelay
-				if after > d {
-					after = d
-				}
-				<-time.After(after)
-				pq.Unlock()
-				continue
-			}
-			heap.Remove(pq.h, elem.index)
 		} else {
 			atomic.StoreInt32(&pq.state, waiting)
 		}
@@ -79,6 +69,17 @@ func (pq *DelayQueue) Pop() *Delay {
 			case <-pq.ctx.Done():
 				return nil
 			default:
+				if d := elem.deadline.Sub(time.Now()); d > 0 {
+					after := pq.minDelay
+					if after > d {
+						after = d
+					}
+					<-time.After(after)
+					continue
+				}
+				pq.Lock()
+				heap.Remove(pq.h, elem.index)
+				pq.Unlock()
 				return elem
 			}
 		}

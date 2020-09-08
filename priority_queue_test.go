@@ -1,72 +1,117 @@
 package queue
 
 import (
+	"context"
 	"log"
 	"sync"
 	"testing"
 	"time"
 )
 
-func TestNewPriorityQueue(t *testing.T) {
-	pq := NewPriorityQueue(1000)
+var ec, sc, ecMux, scMux = 0, 0, &sync.Mutex{}, &sync.Mutex{}
+
+func incrEc() {
+	ecMux.Lock()
+	defer ecMux.Unlock()
+	ec++
+}
+
+func incrSc() {
+	scMux.Lock()
+	defer scMux.Unlock()
+	sc++
+}
+
+func TestPriorityQueuePushPop(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	pq := NewPriorityQueue(ctx, 1000)
 	wg := &sync.WaitGroup{}
 
-	// 停止Pop
 	go func() {
-		time.Sleep(time.Second * 30)
-		pq.Stop()
+		time.Sleep(time.Second * 100)
+		cancel()
 	}()
 
-	// 生产Push
+	// Push
 	for i := 0; i < 1000; i++ {
-		ic := *&i
-		go func() {
-			elem := &Element{Value: ic, Priority: ic}
-			pq.Push(elem)
-			log.Println("push1:", elem)
-		}()
+		wg.Add(1)
+		go func(i int) {
+			pq.Push(&Element{V: i, P: i})
+			wg.Done()
+		}(i)
 	}
 
-	// 生产Push
-	go func() {
-		time.Sleep(time.Second * 2)
-		for i := 0; i < 1000; i++ {
-			ic := *&i
-			go func() {
-				elem := &Element{Value: ic, Priority: ic}
-				pq.Push(elem)
-				log.Println("push2:", elem)
-			}()
-		}
-	}()
-
-	// 消费Pop
+	// Pop
 	wg.Add(1)
 	go func() {
 		for {
-			elem := pq.Pop()
-			log.Println("pop1:", elem)
-			if elem == nil { // 得到的元素为空时说明队列已停止
-				log.Println("pop1:stop", pq.Len())
+			if elem, ok := pq.Pop(); !ok { // the pop is stop
+				log.Printf("pop:stop\n")
+				incrSc()
 				wg.Done()
 				return
+			} else {
+				incrEc()
+				log.Printf("pop:%d--%d\n", elem.V, elem.P)
 			}
 		}
 	}()
 
-	// 消费Pop
-	wg.Add(1)
-	go func() {
-		for {
-			elem := pq.Pop()
-			log.Println("pop2:", elem)
-			if elem == nil {
-				log.Println("pop2:stop", pq.Len())
-				wg.Done()
-				return
-			}
-		}
-	}()
-
+	// wait
 	wg.Wait()
+
+	// check pass
+	if ec == 1000 && sc == 1 {
+		t.Log("OK")
+	} else {
+		t.Errorf("ec:%d, sc:%d", ec, sc)
+	}
+}
+
+func TestPriorityQueuePeekFixRemove(t *testing.T) {
+	pq := NewPriorityQueue(context.Background(), 1000)
+
+	// Push
+	for i := 0; i < 500; i++ {
+		pq.Push(&Element{V: i, P: i})
+	}
+
+	// Peek Fix
+	isFx := true
+	for i := 0; i < 500; i++ {
+		elem := pq.Peek(0)
+		if elem != nil {
+			pre := elem.index
+			elem.P = -1
+			pq.Fix(elem)
+			if elem.index != 0 && pre == elem.index {
+				isFx = false
+			}
+		}
+	}
+	if isFx {
+		t.Log("peek fix ok")
+	} else {
+		t.Error("peek fix fail")
+		return
+	}
+
+	// Peek Remove
+	isRm := true
+	for i := 0; i < 500; i++ {
+		elem := pq.Peek(0)
+		if elem != nil {
+			rmd := pq.Remove(elem)
+			if rmd.V != elem.V {
+				isRm = false
+				break
+			}
+		}
+	}
+	if isRm && pq.Len() == 0 {
+		t.Log("peek remove ok")
+	} else {
+		t.Error("peek remove fail")
+		return
+	}
 }

@@ -1,99 +1,58 @@
 package queue
 
 import (
+	"context"
 	"log"
+	"net/http"
+	_ "net/http/pprof"
 	"sync"
 	"testing"
 	"time"
 )
 
-func TestNewDelayQueue(t *testing.T) {
-	pq := NewDelayQueue(time.Nanosecond, 1000)
+func init() {
+	go func() {
+		http.ListenAndServe(":8080", nil)
+	}()
+}
+
+func TestDelayQueuePushPop(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	dq := NewDelayQueue(ctx, 1000, func() time.Time {
+		return time.Now()
+	})
 	wg := &sync.WaitGroup{}
 
-	// 停止Pop
+	// Stop
 	go func() {
-		time.Sleep(time.Second * 60)
-		pq.Stop()
+		time.Sleep(time.Second * 1)
+		cancel()
 	}()
 
-	// 消费Pop
-	//wg.Add(1)
-	//go func() {
-	//	for {
-	//		elem := pq.Pop()
-	//		log.Println("pop1:", elem, elem.deadline.Sub(time.Now()))
-	//		if elem == nil { // 得到的元素为空时说明队列已停止
-	//			log.Println("pop1:stop", pq.Len())
-	//			wg.Done()
-	//			return
-	//		}
-	//	}
-	//}()
-
-	// 消费Pop
+	// Pop
 	wg.Add(1)
 	go func() {
 		for {
-			elem := pq.Pop()
-			log.Println("pop2:", elem, elem.deadline.Sub(time.Now()))
-			if elem == nil {
-				log.Println("pop2:stop", pq.Len())
+			if delay, ok := dq.Pop(); !ok { // the pop is stop
+				log.Printf("pop:stop\n")
 				wg.Done()
 				return
+			} else {
+				log.Printf("pop:%d-%s-%s\n", delay.V, delay.D, delay.deadline.Sub(time.Now()))
 			}
 		}
 	}()
 
-	// 生产Push
-	for i := 0; i < 1000; i++ {
-		ic := *&i
-		//go func() {
-		elem := &Delay{Value: ic, Delay: time.Nanosecond * time.Duration(ic)}
-		pq.Push(elem)
-		//log.Println("push1:", elem)
-		//}()
-	}
-
-	// 生产Push
+	// Push
 	go func() {
 		for i := 0; i < 1000; i++ {
-			ic := *&i
-			//go func() {
-			elem := &Delay{Value: ic, Delay: time.Nanosecond * time.Duration(ic)}
-			pq.Push(elem)
-			//log.Println("push2:", elem)
-			//}()
+			wg.Add(1)
+			go func(i int) {
+				dq.Push(&Delay{V: i, D: time.Millisecond * time.Duration(i)})
+				wg.Done()
+			}(i)
 		}
 	}()
-
-	//// 消费Pop
-	//wg.Add(1)
-	//go func() {
-	//	for {
-	//		elem := pq.Pop()
-	//		log.Println("pop1:", elem, elem.deadline.Sub(time.Now()))
-	//		if elem == nil { // 得到的元素为空时说明队列已停止
-	//			log.Println("pop1:stop", pq.Len())
-	//			wg.Done()
-	//			return
-	//		}
-	//	}
-	//}()
-	//
-	//// 消费Pop
-	//wg.Add(1)
-	//go func() {
-	//	for {
-	//		elem := pq.Pop()
-	//		log.Println("pop2:", elem, elem.deadline.Sub(time.Now()))
-	//		if elem == nil {
-	//			log.Println("pop2:stop", pq.Len())
-	//			wg.Done()
-	//			return
-	//		}
-	//	}
-	//}()
 
 	wg.Wait()
 }

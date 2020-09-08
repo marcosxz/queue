@@ -7,116 +7,112 @@ import (
 	"sync/atomic"
 )
 
-const (
-	normal   int32 = 0
-	waiting  int32 = 1
-	blocking int32 = 2
-)
-
-// 优先级队列
 type PriorityQueue struct {
-	sync.RWMutex
+	sync.Mutex
 	h      heap.Interface
-	state  int32
+	state  int32 // 0 none 1 sleeping
 	wakeC  chan struct{}
-	ctx    context.Context
-	cancel context.CancelFunc
+	queueC chan *Element
 }
 
-// Len队列长度
+func NewPriorityQueue(ctx context.Context, cap int) *PriorityQueue {
+	pq := &PriorityQueue{
+		h:      NewHeapElements(cap),
+		wakeC:  make(chan struct{}),
+		queueC: make(chan *Element, cap),
+	}
+	heap.Init(pq.h)
+	go pq.pop(ctx)
+	return pq
+}
+
 func (pq *PriorityQueue) Len() int {
-	pq.RLock()
+	pq.Lock()
 	n := pq.h.Len()
-	pq.RUnlock()
+	pq.Unlock()
 	return n
 }
 
-// Push入队
+func (pq *PriorityQueue) Queue() <-chan *Element {
+	return pq.queueC
+}
+
+func (pq *PriorityQueue) Pop() (*Element, bool) {
+	elem, ok := <-pq.queueC
+	return elem, ok
+}
+
 func (pq *PriorityQueue) Push(elem *Element) {
 	if elem != nil {
 		pq.Lock()
 		heap.Push(pq.h, elem)
+		idx := elem.index
 		pq.Unlock()
-		if atomic.CompareAndSwapInt32(&pq.state, blocking, normal) {
+		if idx == 0 && atomic.CompareAndSwapInt32(&pq.state, 1, 0) {
 			pq.wakeC <- struct{}{}
 		}
 	}
 }
 
-// Pop出队
-func (pq *PriorityQueue) Pop() *Element {
-	for {
-		var elem *Element
-		pq.Lock()
-		if n := pq.h.Len(); n > 0 {
-			elem = heap.Pop(pq.h).(*Element)
-		} else {
-			atomic.StoreInt32(&pq.state, waiting)
-		}
-		pq.Unlock()
-		switch {
-		case atomic.CompareAndSwapInt32(&pq.state, waiting, blocking):
-			select {
-			case i := <-pq.wakeC:
-				select {
-				case pq.wakeC <- i:
-				default:
-					continue
-				}
-			case <-pq.ctx.Done():
-				return nil
-			}
-		default:
-			select {
-			case <-pq.ctx.Done():
-				return nil
-			default:
-				return elem
-			}
-		}
-	}
-}
-
-// Fix更新元素并根据优先级重新固定位置
 func (pq *PriorityQueue) Fix(elem *Element) {
+	pq.Lock()
 	if elem != nil && elem.index > -1 {
-		pq.Lock()
 		heap.Fix(pq.h, elem.index)
-		pq.Unlock()
 	}
+	pq.Unlock()
 }
 
-// Remove删除队列中的元素
-func (pq *PriorityQueue) Remove(elem *Element) {
+func (pq *PriorityQueue) Remove(elem *Element) *Element {
+	pq.Lock()
 	if elem != nil && elem.index > -1 {
-		pq.Lock()
-		heap.Remove(pq.h, elem.index)
-		pq.Unlock()
+		if rmd := heap.Remove(pq.h, elem.index); rmd != nil {
+			elem = rmd.(*Element)
+		}
 	}
-}
-
-// Peek查看但不出队
-func (pq *PriorityQueue) Peek(idx int) *Element {
-	if idx < 0 {
-		return nil
-	}
-	var elem *Element
-	pq.RLock()
-	if n := pq.h.Len(); n > idx {
-		hi := *pq.h.(*HeapElements)
-		elem = hi[idx]
-	}
-	pq.RUnlock()
+	pq.Unlock()
 	return elem
 }
 
-func (pq *PriorityQueue) Stop() {
-	pq.cancel()
+func (pq *PriorityQueue) Peek(idx int) *Element {
+	var elem *Element
+	pq.Lock()
+	if n := pq.h.Len(); n > idx {
+		hi := *pq.h.(*HeapElements)
+		elem = hi.e[idx]
+	}
+	pq.Unlock()
+	return elem
 }
 
-func NewPriorityQueue(cap int) *PriorityQueue {
-	h := make(HeapElements, 0, cap)
-	heap.Init(&h)
-	ctx, cancel := context.WithCancel(context.Background())
-	return &PriorityQueue{h: &h, ctx: ctx, cancel: cancel, wakeC: make(chan struct{})}
+func (pq *PriorityQueue) pop(ctx context.Context) {
+loop:
+	var elem *Element
+	pq.Lock()
+	if pq.h.Len() > 0 {
+		elem = heap.Pop(pq.h).(*Element)
+	}
+	pq.Unlock()
+	if elem != nil {
+		select {
+		case <-ctx.Done():
+			goto exit
+		case pq.queueC <- elem:
+			goto loop
+		}
+	}
+	atomic.StoreInt32(&pq.state, 1)
+	select {
+	case s := <-pq.wakeC:
+		select {
+		case pq.wakeC <- s: // notify other sleep wakeC
+			goto loop
+		default:
+			goto loop
+		}
+	case <-ctx.Done():
+		goto exit
+	}
+exit:
+	close(pq.queueC)
+	atomic.StoreInt32(&pq.state, 0)
 }

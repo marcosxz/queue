@@ -8,124 +8,144 @@ import (
 	"time"
 )
 
-// 优先级队列
 type DelayQueue struct {
-	sync.RWMutex
-	h        heap.Interface
-	state    int32
-	wakeC    chan struct{}
-	ctx      context.Context
-	cancel   context.CancelFunc
-	minDelay time.Duration
+	sync.Mutex
+	h      heap.Interface
+	state  int32 // 0 none 1 sleeping
+	wakeC  chan struct{}
+	queueC chan *Delay
+	nowFn  func() time.Time
 }
 
-// Len队列长度
-func (pq *DelayQueue) Len() int {
-	pq.RLock()
-	n := pq.h.Len()
-	pq.RUnlock()
+func NewDelayQueue(ctx context.Context, cap int, now func() time.Time) *DelayQueue {
+	if now == nil {
+		now = func() time.Time { return time.Now() }
+	}
+	dq := &DelayQueue{
+		nowFn:  now,
+		h:      NewHeapDelays(cap),
+		wakeC:  make(chan struct{}),
+		queueC: make(chan *Delay, cap),
+	}
+	heap.Init(dq.h)
+	go dq.pop(ctx)
+	return dq
+}
+
+func (dq *DelayQueue) Len() int {
+	dq.Lock()
+	n := dq.h.Len()
+	dq.Unlock()
 	return n
 }
 
-// Push入队
-func (pq *DelayQueue) Push(elem *Delay) {
-	if elem != nil {
-		elem.deadline = time.Now().Add(elem.Delay)
-		pq.Lock()
-		heap.Push(pq.h, elem)
-		pq.Unlock()
-		if atomic.CompareAndSwapInt32(&pq.state, blocking, normal) {
-			pq.wakeC <- struct{}{}
+func (dq *DelayQueue) Queue() <-chan *Delay {
+	return dq.queueC
+}
+
+func (dq *DelayQueue) Pop() (*Delay, bool) {
+	delay, ok := <-dq.queueC
+	return delay, ok
+}
+
+func (dq *DelayQueue) Push(delay *Delay) {
+	if delay != nil {
+		delay.deadline = dq.nowFn().Add(delay.D)
+		dq.Lock()
+		heap.Push(dq.h, delay)
+		idx := delay.index
+		dq.Unlock()
+		if idx == 0 && atomic.CompareAndSwapInt32(&dq.state, 1, 0) {
+			dq.wakeC <- struct{}{}
 		}
 	}
 }
 
-// Pop出队
-func (pq *DelayQueue) Pop() *Delay {
-	for {
-		var elem *Delay
-		pq.Lock()
-		if n := pq.h.Len(); n > 0 {
-			hi := *pq.h.(*HeapDelays)
-			elem = hi[0]
-		} else {
-			atomic.StoreInt32(&pq.state, waiting)
+func (dq *DelayQueue) Fix(delay *Delay) {
+	dq.Lock()
+	if delay != nil && delay.index > -1 {
+		heap.Fix(dq.h, delay.index)
+	}
+	dq.Unlock()
+}
+
+func (dq *DelayQueue) Remove(delay *Delay) *Delay {
+	dq.Lock()
+	if delay != nil && delay.index > -1 {
+		if rmd := heap.Remove(dq.h, delay.index); rmd != nil {
+			delay = rmd.(*Delay)
 		}
-		pq.Unlock()
-		switch {
-		case atomic.CompareAndSwapInt32(&pq.state, waiting, blocking):
-			select {
-			case i := <-pq.wakeC:
-				select {
-				case pq.wakeC <- i:
-				default:
-					continue
-				}
-			case <-pq.ctx.Done():
-				return nil
-			}
-		default:
-			select {
-			case <-pq.ctx.Done():
-				return nil
+	}
+	dq.Unlock()
+	return delay
+}
+
+func (dq *DelayQueue) Peek(idx int) *Delay {
+	var delay *Delay
+	dq.Lock()
+	if n := dq.h.Len(); n > idx {
+		hi := *dq.h.(*HeapDelays)
+		delay = hi.e[idx]
+	}
+	dq.Unlock()
+	return delay
+}
+
+func (dq *DelayQueue) pop(ctx context.Context) {
+	timer := time.NewTimer(0)
+loop:
+	dq.Lock()
+	removed, remaining, ok := dq.expiredRemove()
+	dq.Unlock()
+	if remaining > 0 {
+		timer.Reset(remaining)
+	}
+	switch {
+	case !ok: // queue is empty
+		atomic.StoreInt32(&dq.state, 1)
+		select {
+		case <-dq.wakeC:
+			goto loop
+		case <-ctx.Done():
+			goto exit
+		}
+	case removed == nil: // no expired item
+		atomic.StoreInt32(&dq.state, 1)
+		select {
+		case <-dq.wakeC:
+			goto loop
+		case <-ctx.Done():
+			goto exit
+		case <-timer.C:
+			select { // the dq.wakeC is continue, unblock the Push
+			case <-dq.wakeC:
+				goto loop
 			default:
-				if d := elem.deadline.Sub(time.Now()); d > 0 {
-					after := pq.minDelay
-					if after > d {
-						after = d
-					}
-					<-time.After(after)
-					continue
-				}
-				pq.Lock()
-				heap.Remove(pq.h, elem.index)
-				pq.Unlock()
-				return elem
+				goto loop
 			}
 		}
+	default: // item is expired and is removed
+		select {
+		case <-ctx.Done():
+			goto exit
+		case dq.queueC <- removed:
+			goto loop
+		}
 	}
+exit:
+	close(dq.queueC)
+	atomic.StoreInt32(&dq.state, 0)
 }
 
-// Fix更新元素并根据优先级重新固定位置
-func (pq *DelayQueue) Fix(elem *Delay) {
-	if elem != nil && elem.index > -1 {
-		pq.Lock()
-		heap.Fix(pq.h, elem.index)
-		pq.Unlock()
+func (dq *DelayQueue) expiredRemove() (*Delay, time.Duration, bool) {
+	if dq.h.Len() == 0 {
+		return nil, 0, false
 	}
-}
-
-// Remove删除队列中的元素
-func (pq *DelayQueue) Remove(elem *Delay) {
-	if elem != nil && elem.index > -1 {
-		pq.Lock()
-		heap.Remove(pq.h, elem.index)
-		pq.Unlock()
+	hi := *dq.h.(*HeapDelays)
+	delay := hi.e[0]
+	if diff := delay.deadline.Sub(dq.nowFn()); diff > 0 {
+		return nil, diff, true
 	}
-}
-
-// Peek查看但不出队
-func (pq *DelayQueue) Peek(idx int) *Delay {
-	if idx < 0 {
-		return nil
-	}
-	var elem *Delay
-	pq.RLock()
-	if n := pq.h.Len(); n > idx {
-		hi := *pq.h.(*HeapDelays)
-		elem = hi[idx]
-	}
-	pq.RUnlock()
-	return elem
-}
-
-func (pq *DelayQueue) Stop() {
-	pq.cancel()
-}
-
-func NewDelayQueue(minDelay time.Duration, cap int) *DelayQueue {
-	h := make(HeapDelays, 0, cap)
-	heap.Init(&h)
-	ctx, cancel := context.WithCancel(context.Background())
-	return &DelayQueue{h: &h, ctx: ctx, cancel: cancel, minDelay: minDelay, wakeC: make(chan struct{})}
+	heap.Remove(dq.h, delay.index)
+	return delay, 0, true
 }

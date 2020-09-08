@@ -1,86 +1,135 @@
 package queue
 
 import (
+	"container/heap"
 	"time"
 )
 
 type Element struct {
-	Value    interface{} // 值
-	Priority int         // 优先级,越大越先出队
-	index    int         // 位置
+	V     interface{} // value
+	P     int         // priority: max is first pop
+	index int         // heap index
 }
 
-// 实现标准库heap接口
-type HeapElements []*Element
-
-func (pq HeapElements) Len() int {
-	return len(pq)
+func (e *Element) Index() int {
+	return e.index
 }
 
-func (pq HeapElements) Less(i, j int) bool {
-	return pq[i].Priority > pq[j].Priority
+// impl the std lib heap interface
+type HeapElements struct {
+	cap int
+	e   []*Element
 }
 
-func (pq HeapElements) Swap(i, j int) {
-	pq[i], pq[j] = pq[j], pq[i]
-	pq[i].index = i
-	pq[j].index = j
+func NewHeapElements(cap int) heap.Interface {
+	return &HeapElements{cap: cap, e: make([]*Element, 0, cap)}
 }
 
-func (pq *HeapElements) Push(x interface{}) {
-	n := len(*pq)
+func (he *HeapElements) Len() int {
+	return len(he.e)
+}
+
+func (he *HeapElements) Less(i, j int) bool {
+	return he.e[i].P > he.e[j].P
+}
+
+func (he *HeapElements) Swap(i, j int) {
+	he.e[i], he.e[j] = he.e[j], he.e[i]
+	he.e[i].index, he.e[j].index = i, j
+}
+
+func (he *HeapElements) Push(x interface{}) {
+	n := len(he.e)
+	c := cap(he.e)
+	if n >= c {
+		ne := make([]*Element, n, c*2)
+		copy(ne, he.e)
+		he.e = ne
+	}
 	item := x.(*Element)
 	item.index = n
-	*pq = append(*pq, item)
+	he.e = append(he.e, item)
 }
 
-func (pq *HeapElements) Pop() interface{} {
-	old := *pq
-	n := len(old)
-	item := old[n-1]
-	old[n-1] = nil
+func (he *HeapElements) Pop() interface{} {
+	n := len(he.e)
+	c := cap(he.e)
+	half := c / 2
+	if n < half && half >= he.cap {
+		ne := make([]*Element, n, half)
+		copy(ne, he.e)
+		he.e = ne
+	}
+	item := he.e[n-1]
 	item.index = -1
-	*pq = old[0 : n-1]
+	he.e[n-1] = nil
+	he.e = he.e[0 : n-1]
 	return item
 }
 
-// 实现标准库heap接口
+// impl the std lib heap interface
 type Delay struct {
-	Value    interface{}
-	Delay    time.Duration
+	V        interface{}   // value
+	D        time.Duration // delay: min time.Millisecond is better
 	deadline time.Time
 	index    int
 }
 
-type HeapDelays []*Delay
-
-func (hd HeapDelays) Len() int {
-	return len(hd)
+func (d *Delay) Deadline() time.Time {
+	return d.deadline
 }
 
-func (hd HeapDelays) Less(i, j int) bool {
-	return hd[i].Delay < hd[j].Delay
+func (d *Delay) Index() int {
+	return d.index
 }
 
-func (hd HeapDelays) Swap(i, j int) {
-	hd[i], hd[j] = hd[j], hd[i]
-	hd[i].index = i
-	hd[j].index = j
+type HeapDelays struct {
+	cap int
+	e   []*Delay
+}
+
+func NewHeapDelays(cap int) heap.Interface {
+	return &HeapDelays{cap: cap, e: make([]*Delay, 0, cap)}
+}
+
+func (hd *HeapDelays) Len() int {
+	return len(hd.e)
+}
+
+func (hd *HeapDelays) Less(i, j int) bool {
+	return hd.e[i].D < hd.e[j].D
+}
+
+func (hd *HeapDelays) Swap(i, j int) {
+	hd.e[i], hd.e[j] = hd.e[j], hd.e[i]
+	hd.e[i].index, hd.e[j].index = i, j
 }
 
 func (hd *HeapDelays) Push(x interface{}) {
-	n := len(*hd)
+	n := len(hd.e)
+	c := cap(hd.e)
+	if n >= c {
+		ne := make([]*Delay, n, c*2)
+		copy(ne, hd.e)
+		hd.e = ne
+	}
 	item := x.(*Delay)
 	item.index = n
-	*hd = append(*hd, item)
+	hd.e = append(hd.e, item)
 }
 
 func (hd *HeapDelays) Pop() interface{} {
-	old := *hd
-	n := len(old)
-	item := old[n-1]
-	old[n-1] = nil
+	n := len(hd.e)
+	c := cap(hd.e)
+	half := c / 2
+	if n < half && half >= hd.cap {
+		ne := make([]*Delay, n, half)
+		copy(ne, hd.e)
+		hd.e = ne
+	}
+	item := hd.e[n-1]
 	item.index = -1
-	*hd = old[0 : n-1]
+	hd.e[n-1] = nil
+	hd.e = hd.e[0 : n-1]
 	return item
 }
